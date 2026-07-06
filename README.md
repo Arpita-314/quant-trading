@@ -87,9 +87,15 @@ simulated annealing. It matched the optimum 25/25 times across every
 cardinality and 5 seeds each -- a genuine, verifiable **correctness**
 result on real data. It is explicitly **not** a performance claim: at 6
 strategies, classical simulated annealing solves the same problem just as
-reliably, and the README there says so directly. QPhase isn't a public
-dependency, so this script isn't part of CI or the installable package --
-see its own README for how to run it against a local QPhase checkout.
+reliably, and the README there says so directly. A second script poses a
+genuinely NP-hard variant (Maximum Weight Independent Set, one of Karp's
+original 21 NP-complete problems) over 6,325 real historical trade
+opportunities extracted from this repo's own strategies; there, QPhase's
+QAOA matched the optimum in 4 of 5 seeds rather than a clean sweep --
+the expected, honest behavior of a heuristic with no convergence
+guarantee. QPhase isn't a public dependency, so neither script is part of
+CI or the installable package -- see the folder's own README for how to
+run them against a local QPhase checkout.
 
 ### The causality contract (why this isn't a toy backtester)
 

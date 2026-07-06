@@ -41,11 +41,52 @@ flatter either project. That's a genuine, verifiable result. It is not
 evidence that this approach beats classical optimization at this scale, and
 describing it that way would be overclaiming.
 
+## A second, harder problem: capital-constrained trade selection
+
+`run_trade_selection.py` poses a different, genuinely NP-hard question:
+given real historical trade opportunities from this repo's own strategies
+(6,325 of them, across all six strategies and the full backtest window),
+which ones could a capital-constrained book actually have afforded to take?
+
+Each contiguous run of a strategy's executed position on one ticker is a
+real historical entry/exit window with a real realized profit (scored
+exactly the way the backtest engine does — lagged signal times return, no
+different accounting). Two opportunities conflict if their time windows
+overlap, **or** if they're in the same sector and within a 10-day cooldown
+of each other (a real, common concentration-limit practice, and
+deliberately included: pure time-overlap-only conflicts form an interval
+graph, on which this problem is solvable in polynomial time by a
+specialized algorithm — an accidentally-easy special case that wouldn't
+actually test general MWIS solving).
+
+This is Maximum Weight Independent Set — one of Karp's original 21
+NP-complete problems, and a standard QAOA benchmark in its own right
+(Pichler, Wang, Zhou, Kok & Lukin, arXiv:1808.10816), not a problem class
+invented for this repo.
+
+To keep brute-force verification and exact statevector simulation fast,
+the 14 largest-magnitude opportunities (by absolute profit) are kept; the
+other 6,311 are dropped and that's logged explicitly, not silently
+truncated. The resulting instance: 14 opportunities, 13 conflict edges.
+
+| method | result |
+|---|---|
+| Brute-force optimum | 0.486 (3 non-overlapping NVDA insider-buying windows + one AMZN momentum window) |
+| QPhase QAOA | matched the optimum in **4 of 5** random seeds |
+| Classical simulated annealing (`neal`) | matched the optimum |
+
+**This result is more informative than a clean sweep would have been.**
+QAOA is a heuristic with no convergence guarantee — missing the optimum on
+1 of 5 seeds is the expected, honest behavior of a shallow (p=2), modestly-
+optimized (COBYLA, 80 iterations) circuit, not a bug. A suspiciously
+perfect record across two different experiments would be the thing to be
+suspicious of.
+
 ## Running it
 
-This script is intentionally **not** part of `quant-trading`'s installable
-package or CI — QPhase is a separate, private repository, not a public
-dependency, so nothing here can assume it's installed.
+Neither script here is part of `quant-trading`'s installable package or
+CI — QPhase is a separate, private repository, not a public dependency, so
+nothing here can assume it's installed.
 
 ```bash
 cd ../..                            # repo root
@@ -53,4 +94,5 @@ pip install -e .                    # this repo's own quant_trading package
 pip install dimod dwave-neal        # classical cross-check
 cd research/qphase-cross-validation
 python run_comparison.py --qphase-path /path/to/your/qphase/checkout
+python run_trade_selection.py --qphase-path /path/to/your/qphase/checkout
 ```
