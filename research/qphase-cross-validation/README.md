@@ -116,9 +116,62 @@ thing. QPhase matched the exact optimum in all 30 (K, seed) combinations
 here; so did classical simulated annealing, for the same n=7 reason as
 everywhere else in this folder.
 
+## A different algorithm family entirely: option pricing via amplitude estimation
+
+`run_option_pricing.py` is not QAOA. Every problem above is a NISQ-native
+heuristic with no proven speedup, which is why every section above says
+"correctness, not a performance claim." **Quantum amplitude estimation**
+(Brassard, Høyer, Mosca & Tapp, 2002) is different in kind: it has a
+*proven* quadratic advantage over classical Monte Carlo (pricing error
+O(1/M) in M oracle calls, vs. Monte Carlo's O(1/sqrt(N)) in N samples) --
+in the fault-tolerant regime it targets. This script implements the
+option-pricing application of that algorithm (Stamatopoulos, Egger, Sun,
+Zoufal, Iten, Shen & Woerner, "Option Pricing using Quantum Computers,"
+*Quantum* 4, 291 (2020)), using Suzuki et al.'s "amplitude estimation
+without phase estimation" (2020) readout -- Grover-operator power
+schedule + classical maximum-likelihood estimation, instead of the
+deeper canonical circuit (ancilla phase register + controlled powers +
+inverse QFT).
+
+**What's genuinely validated here is correctness, not the speedup.**
+Demonstrating a quadratic query advantage empirically needs a scale no
+classical simulator can reach; claiming it at a handful of qubits would
+undercut the actual point. What the pipeline was checked against, at
+every stage while building it: the exact analytical Grover-amplification
+formula (`sin^2((2m+1)*theta)`, verified to floating-point precision
+before any application code was written on top of it), then the resulting
+option price against closed-form Black-Scholes and classical Monte Carlo.
+
+The price-uncertainty register is capped at 2 qubits (4 discretized price
+levels) for this build -- the general multi-controlled-gate construction
+needed for more qubits requires extra "work" qubits via a compute-
+uncompute cascade, and correctly provisioning + validating that path was
+out of scope for this pass (see `qphase/problems/option_pricing.py`'s
+module docstring for the exact bug this avoided). That's a stated scope
+limit, not a hidden one, and it has a real, visible cost: pricing a real
+AAPL call option (spot from real market data, volatility from real
+trailing realized returns, not a placeholder number) across five strikes:
+
+| strike | moneyness | Black-Scholes | Monte Carlo | QAE (simulated) | QAE rel. error |
+|---|---|---|---|---|---|
+| 266.19 | 0.85 | 63.08 | 63.14 | 61.11 | 3.1% |
+| 297.51 | 0.95 | 42.73 | 42.78 | 42.10 | 1.5% |
+| 313.17 | 1.00 | 34.47 | 34.52 | 34.43 | **0.1%** |
+| 328.83 | 1.05 | 27.46 | 27.51 | 26.87 | 2.2% |
+| 360.15 | 1.15 | 16.85 | 16.87 | 13.86 | 17.8% |
+
+Error is smallest at-the-money and grows in both directions -- exactly the
+expected shape for a 4-point discretization grid concentrated near the
+strike (see the class docstring's `n_std` discussion): the further a
+strike sits from where the grid was built to resolve well, the fewer of
+those 4 points land where the payoff actually matters. More qubits (finer
+discretization) is precisely what the fault-tolerant hardware this
+algorithm targets would provide -- not something to fake by cherry-picking
+a grid that happens to fit one example.
+
 ## Running it
 
-None of the three scripts here are part of `quant-trading`'s installable
+None of the four scripts here are part of `quant-trading`'s installable
 package or CI — QPhase is a separate, private repository, not a public
 dependency, so nothing here can assume it's installed.
 
@@ -130,4 +183,5 @@ cd research/qphase-cross-validation
 python run_comparison.py --qphase-path /path/to/your/qphase/checkout
 python run_trade_selection.py --qphase-path /path/to/your/qphase/checkout
 python run_index_tracking.py --qphase-path /path/to/your/qphase/checkout
+python run_option_pricing.py --qphase-path /path/to/your/qphase/checkout
 ```
