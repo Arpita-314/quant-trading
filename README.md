@@ -115,7 +115,10 @@ structural Dicke-state warm start already does the search-space-
 narrowing work a learned initializer would otherwise help with. QPhase
 isn't a public dependency, so none of the five scripts are part of CI or
 the installable package -- see the folder's own README for how to run
-them against a local QPhase checkout.
+them against a local QPhase checkout. The algorithm/problem code these
+scripts call into (not this repo's own dependency, but genuinely new
+QPhase-extension code written alongside this project) is published
+separately: [quantum-finance-algorithms](https://github.com/Arpita-314/quantum-finance-algorithms).
 
 ### The causality contract (why this isn't a toy backtester)
 
