@@ -62,7 +62,15 @@ scripts/
   run_demo.py             # end-to-end backtest: download, backtest, blend, plot
   run_live_agents.py        # live, as-of-today multi-agent signal report (not a backtest)
 tests/                      # includes explicit lookahead-bias regression tests
+research/                    # standalone research pieces, independent of the src/ package
+  options-mispricing-nn/       # pure-numpy NN predicting BS mispricing from vol surfaces
 ```
+
+`research/` holds self-contained research projects that don't share the
+`quant_trading` package's dependencies or conventions -- each has its own
+`requirements.txt` and README rather than being folded into the main
+package, since forcing an unrelated project into a shared namespace just to
+keep one repo would make both harder to read.
 
 ### The causality contract (why this isn't a toy backtester)
 

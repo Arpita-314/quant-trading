@@ -1,0 +1,19 @@
+# Training/data config
+n_days: 500
+n_strikes: 11
+r: 0.05
+q: 0.015
+train_split: 0.70
+val_split: 0.85
+
+# Model/training hyperparameters
+epochs: 200
+batch_size: 512
+lr: 3e-3
+patience: 20
+drop_rate: 0.10
+sizes: [64, 128, 64]
+
+# Logging
+log_level: INFO
+seed: 42
