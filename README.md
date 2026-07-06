@@ -93,9 +93,12 @@ original 21 NP-complete problems) over 6,325 real historical trade
 opportunities extracted from this repo's own strategies; there, QPhase's
 QAOA matched the optimum in 4 of 5 seeds rather than a clean sweep --
 the expected, honest behavior of a heuristic with no convergence
-guarantee. QPhase isn't a public dependency, so neither script is part of
-CI or the installable package -- see the folder's own README for how to
-run them against a local QPhase checkout.
+guarantee. A third script minimizes tracking error instead of maximizing
+return (sparse index tracking on this repo's real 7-ticker universe) --
+a structurally different QUBO, exercising QPhase's "lower is better"
+optimization path. QPhase isn't a public dependency, so none of the three
+scripts are part of CI or the installable package -- see the folder's own
+README for how to run them against a local QPhase checkout.
 
 ### The causality contract (why this isn't a toy backtester)
 
