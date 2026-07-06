@@ -169,9 +169,59 @@ discretization) is precisely what the fault-tolerant hardware this
 algorithm targets would provide -- not something to fake by cherry-picking
 a grid that happens to fit one example.
 
+## Tying it together: quantum risk estimation feeding quantum allocation, warm-started by a neural network
+
+`run_neural_qaoa_init.py` combines three pieces built across this folder
+into one pipeline, rather than three disconnected demos:
+
+1. **Quantum-estimated tail risk** (`TailRiskInstance`, above) for each of
+   this repo's 6 real strategies -- expected downside on each strategy's
+   own empirical historical return distribution, via amplitude estimation
+   rather than a classical formula.
+2. **A hybrid risk-aware allocation QUBO** (`RiskAwarePortfolioInstance`):
+   the same cardinality-constrained selection as `PortfolioInstance`, but
+   with those quantum-estimated tail-risk numbers as a real input to the
+   objective, alongside classical covariance -- quantum estimation feeding
+   quantum optimization, not classical statistics feeding quantum
+   optimization.
+3. **A learned QAOA initializer**: using a classical neural network to
+   predict good starting variational parameters instead of random
+   initialization is published, active research (Verdon et al., "Learning
+   to learn with quantum neural networks via classical neural networks,"
+   2019, and follow-ups on meta-learning for QAOA). This is a small,
+   honestly-scoped instance of that idea: a feedforward network
+   (scikit-learn's `MLPRegressor`, a genuine neural net, not gradient
+   boosting) trained on 150 synthetic 6-asset cardinality-constrained
+   portfolio instances, predicting QAOA's 4 variational parameters
+   (p=2 rounds) from problem features.
+
+**The honest result: it made no measurable difference.** On all 40
+held-out synthetic test instances, and on the real 6-strategy problem,
+NN-initialized and randomly-initialized QAOA converged to *identical*
+final objective values under a short, fixed 15-iteration budget --
+0 wins for the NN, 0 wins for random, 40 ties. Diagnosing why (not
+speculating): running the same real instance from a random starting
+point vs. all-zeros, both reached the exact brute-force optimum within
+15 iterations, landing on *different* final parameter values but the
+same objective. The Dicke-state warm start and Hamming-weight-preserving
+XY mixer already do the structural heavy lifting -- constraining the
+search to the feasible "exactly K selected" subspace from the start --
+so the remaining classical problem (finding good gamma/beta angles, only
+4 numbers) is easy enough that COBYLA reliably finds the optimum from
+almost any reasonable starting point at this scale. A learned initializer
+has no headroom to add value when the thing it's trying to speed up isn't
+actually the bottleneck.
+
+This is reported as a negative result because that's what it is, not
+tuned until it looked better. It's also a real, useful finding: it says
+the interesting place to look for a learned-initializer payoff isn't
+small, structurally-warm-started problems like this one -- it's larger
+instances, or problems without a domain-specific warm start doing this
+much of the work already.
+
 ## Running it
 
-None of the four scripts here are part of `quant-trading`'s installable
+None of the five scripts here are part of `quant-trading`'s installable
 package or CI — QPhase is a separate, private repository, not a public
 dependency, so nothing here can assume it's installed.
 
@@ -184,4 +234,5 @@ python run_comparison.py --qphase-path /path/to/your/qphase/checkout
 python run_trade_selection.py --qphase-path /path/to/your/qphase/checkout
 python run_index_tracking.py --qphase-path /path/to/your/qphase/checkout
 python run_option_pricing.py --qphase-path /path/to/your/qphase/checkout
+python run_neural_qaoa_init.py --qphase-path /path/to/your/qphase/checkout
 ```

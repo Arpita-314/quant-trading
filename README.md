@@ -105,9 +105,17 @@ classical simulator can reach, so what's validated here is correctness
 against Black-Scholes on real AAPL volatility, not the speedup itself:
 0.1% error at-the-money, growing to ~18% at 15% out-of-the-money, exactly
 the expected shape for the 4-level price discretization this build scopes
-to. QPhase isn't a public dependency, so none of the four scripts are
-part of CI or the installable package -- see the folder's own README for
-how to run them against a local QPhase checkout.
+to. A fifth script ties several pieces together: quantum-estimated tail
+risk (amplitude estimation on each strategy's own real historical return
+distribution) feeding a hybrid risk-aware QAOA allocator, itself
+warm-started by a small neural network trained to predict good
+variational parameters -- and reports honestly that the learned
+initializer made no measurable difference at this scale, because the
+structural Dicke-state warm start already does the search-space-
+narrowing work a learned initializer would otherwise help with. QPhase
+isn't a public dependency, so none of the five scripts are part of CI or
+the installable package -- see the folder's own README for how to run
+them against a local QPhase checkout.
 
 ### The causality contract (why this isn't a toy backtester)
 
