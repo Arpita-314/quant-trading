@@ -16,6 +16,9 @@ dependencies = [
     "pyarrow>=14.0",
     "aiohttp>=3.9",
     "vaderSentiment>=3.3",
+    "beautifulsoup4>=4.12",
+    "dimod>=0.12",
+    "dwave-neal>=0.6",
 ]
 
 [project.optional-dependencies]

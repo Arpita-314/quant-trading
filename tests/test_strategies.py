@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from quant_trading.strategies import (
+    FilingDriftStrategy,
     InsiderTradingStrategy,
     MeanReversionStrategy,
     MLSignalStrategy,
@@ -115,6 +116,71 @@ def test_insider_trading_no_lookahead_bias(synthetic_prices):
     truncated_prices = synthetic_prices.iloc[: cutoff + 1]
     truncated_flow = _synthetic_flow(synthetic_prices).iloc[: cutoff + 1]
     truncated_strategy = InsiderTradingStrategy(daily_flow=truncated_flow, lookback=20, z_lookback=100)
+
+    full_signals = strategy.generate_signals(synthetic_prices)
+    truncated_signals = truncated_strategy.generate_signals(truncated_prices)
+
+    pd.testing.assert_series_equal(
+        full_signals.iloc[cutoff],
+        truncated_signals.iloc[cutoff],
+        check_names=False,
+    )
+
+
+def _synthetic_drift_events(synthetic_prices) -> pd.DataFrame:
+    rng = np.random.default_rng(seed=123)
+    event_dates = synthetic_prices.index[::45]  # roughly quarterly across ~300 trading days
+    data = {}
+    for i, ticker in enumerate(synthetic_prices.columns):
+        sims = rng.uniform(0.75, 0.95, size=len(event_dates))
+        sims[2 + i % 2] = 0.40  # inject one unusually low similarity so entry logic actually fires
+        data[ticker] = pd.Series(sims, index=event_dates)
+    return pd.DataFrame(data)
+
+
+def test_filing_drift_signal_shape_and_bounds(synthetic_prices):
+    strategy = FilingDriftStrategy(drift_events=_synthetic_drift_events(synthetic_prices), z_lookback=3, entry_z=1.0)
+    signals = strategy.generate_signals(synthetic_prices)
+    assert list(signals.columns) == list(synthetic_prices.columns)
+    assert signals.index.equals(synthetic_prices.index)
+    assert (signals.to_numpy() >= -1.0 - 1e-9).all()
+    assert (signals.to_numpy() <= 1.0 + 1e-9).all()
+    assert not signals.isna().any().any()
+
+
+def test_filing_drift_entry_holds_for_holding_days(synthetic_prices):
+    holding_days = 10
+    strategy = FilingDriftStrategy(
+        drift_events=_synthetic_drift_events(synthetic_prices),
+        z_lookback=3,
+        entry_z=1.0,
+        holding_days=holding_days,
+    )
+    signals = strategy.generate_signals(synthetic_prices)
+    # at least one ticker must have gone short at some point, given the injected outlier
+    assert (signals < 0).any().any()
+    # a short position, once opened, must persist for exactly `holding_days` bars then clear
+    for ticker in signals.columns:
+        col = signals[ticker]
+        in_position = False
+        run_length = 0
+        for value in col.to_numpy():
+            if value < 0:
+                in_position = True
+                run_length += 1
+            elif in_position:
+                assert run_length == holding_days
+                in_position = False
+                run_length = 0
+
+
+def test_filing_drift_no_lookahead_bias(synthetic_prices):
+    strategy = FilingDriftStrategy(drift_events=_synthetic_drift_events(synthetic_prices), z_lookback=3, entry_z=1.0)
+    cutoff = 200
+    truncated_prices = synthetic_prices.iloc[: cutoff + 1]
+    truncated_events = _synthetic_drift_events(synthetic_prices)
+    truncated_events = truncated_events[truncated_events.index <= truncated_prices.index[-1]]
+    truncated_strategy = FilingDriftStrategy(drift_events=truncated_events, z_lookback=3, entry_z=1.0)
 
     full_signals = strategy.generate_signals(synthetic_prices)
     truncated_signals = truncated_strategy.generate_signals(truncated_prices)

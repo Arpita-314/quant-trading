@@ -9,5 +9,8 @@ pytest>=7.4
 pytest-asyncio>=0.23
 aiohttp>=3.9
 vaderSentiment>=3.3
+beautifulsoup4>=4.12
+dimod>=0.12
+dwave-neal>=0.6
 # optional, only needed for the LLM-based sentiment agent:
 # anthropic>=0.40

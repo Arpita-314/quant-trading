@@ -55,44 +55,90 @@ class InsiderTransaction:
 
 
 REQUEST_TIMEOUT_SECONDS = 60
+MAX_HTTP_RETRIES = 5
+
+
+async def _request_with_retry(session: aiohttp.ClientSession, url: str) -> aiohttp.ClientResponse:
+    """Shared retry-with-backoff for every GET against SEC's endpoints.
+
+    Fetching thousands of filings in one run (as the insider-transaction
+    and filing-text pipelines do) can burn through SEC's fair-use quota, and
+    the *next* unrelated call -- even a small one like the ticker mapping --
+    then gets a bare 429 with no retry, failing outright. Retrying here once
+    instead of in every individual caller means every caller benefits, and a
+    429 specifically respects a `Retry-After` header if SEC sends one.
+    """
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+    last_exc: Exception | None = None
+
+    for attempt in range(MAX_HTTP_RETRIES):
+        is_last_attempt = attempt == MAX_HTTP_RETRIES - 1
+        delay = min(2.0**attempt, 30.0)
+
+        try:
+            resp = await session.get(url, headers=HEADERS, timeout=timeout)
+        except aiohttp.ClientError as exc:
+            last_exc = exc
+        else:
+            retryable = resp.status == 429 or resp.status >= 500
+            if not retryable:
+                return resp
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after:
+                delay = float(retry_after)
+            last_exc = aiohttp.ClientResponseError(resp.request_info, resp.history, status=resp.status)
+            resp.release()
+
+        if not is_last_attempt:
+            await asyncio.sleep(delay)
+
+    raise last_exc
 
 
 async def _get_json(session: aiohttp.ClientSession, url: str) -> dict:
-    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-    async with session.get(url, headers=HEADERS, timeout=timeout) as resp:
+    resp = await _request_with_retry(session, url)
+    async with resp:
         resp.raise_for_status()
         return await resp.json(content_type=None)
 
 
 async def _get_text(session: aiohttp.ClientSession, url: str) -> str:
-    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-    async with session.get(url, headers=HEADERS, timeout=timeout) as resp:
+    resp = await _request_with_retry(session, url)
+    async with resp:
         resp.raise_for_status()
         return await resp.text()
 
 
 _TICKER_TO_CIK_CACHE: dict[str, str] | None = None
+_TICKER_TO_CIK_DISK_CACHE = Path(__file__).resolve().parents[3] / "data_cache" / "sec_edgar" / "ticker_to_cik.json"
 
 
 async def load_ticker_to_cik(session: aiohttp.ClientSession, tickers: list[str]) -> dict[str, str]:
     """Resolve tickers to zero-padded CIKs. The full ~800KB ticker->CIK file
-    is fetched once per process and memoized -- it's the same slow, largely
-    static file regardless of which tickers are requested."""
+    is mostly static (new listings aside), so it's cached to disk in
+    addition to the in-process memo -- there's no reason a fresh process
+    should re-fetch the whole file every run."""
     global _TICKER_TO_CIK_CACHE
     if _TICKER_TO_CIK_CACHE is None:
-        data = await _get_json(session, TICKERS_URL)
-        _TICKER_TO_CIK_CACHE = {
-            entry["ticker"]: str(entry["cik_str"]).zfill(10) for entry in data.values()
-        }
+        if _TICKER_TO_CIK_DISK_CACHE.exists():
+            _TICKER_TO_CIK_CACHE = json.loads(_TICKER_TO_CIK_DISK_CACHE.read_text(encoding="utf-8"))
+        else:
+            data = await _get_json(session, TICKERS_URL)
+            _TICKER_TO_CIK_CACHE = {
+                entry["ticker"]: str(entry["cik_str"]).zfill(10) for entry in data.values()
+            }
+            _TICKER_TO_CIK_DISK_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            _TICKER_TO_CIK_DISK_CACHE.write_text(json.dumps(_TICKER_TO_CIK_CACHE), encoding="utf-8")
     wanted = set(tickers)
     return {t: cik for t, cik in _TICKER_TO_CIK_CACHE.items() if t in wanted}
 
 
-async def _list_form4_filings(
-    session: aiohttp.ClientSession, cik: str, start_date: str | None = None
+async def _list_filings(
+    session: aiohttp.ClientSession, cik: str, form_type: str, start_date: str | None = None
 ) -> list[dict]:
-    """Return [{filingDate, accessionNumber, primaryDocument}, ...] for Form 4s
-    on or after `start_date` (skip entirely, default: no limit).
+    """Return [{filingDate, accessionNumber, primaryDocument}, ...] for
+    `form_type` filings (exact match, e.g. "4", "10-K", "10-Q") on or after
+    `start_date` (skip entirely, default: no limit).
 
     Paginated older-filing archives carry their own [filingFrom, filingTo]
     date range in the index -- if that whole range is before `start_date`,
@@ -106,7 +152,7 @@ async def _list_form4_filings(
     for form, date, accn, doc in zip(
         recent["form"], recent["filingDate"], recent["accessionNumber"], recent["primaryDocument"]
     ):
-        if form == "4" and (start_date is None or date >= start_date):
+        if form == form_type and (start_date is None or date >= start_date):
             filings.append({"filingDate": date, "accessionNumber": accn, "primaryDocument": doc})
 
     for older in data["filings"].get("files", []):
@@ -121,7 +167,7 @@ async def _list_form4_filings(
             older_data.get("accessionNumber", []),
             older_data.get("primaryDocument", []),
         ):
-            if form == "4" and (start_date is None or date >= start_date):
+            if form == form_type and (start_date is None or date >= start_date):
                 filings.append({"filingDate": date, "accessionNumber": accn, "primaryDocument": doc})
 
     return filings
@@ -230,7 +276,7 @@ async def fetch_insider_transactions(
             raise ValueError(f"Could not resolve CIK for: {missing}")
 
         filing_lists = await asyncio.gather(
-            *[_list_form4_filings(session, ticker_to_cik[t], start_date=start_date) for t in tickers]
+            *[_list_filings(session, ticker_to_cik[t], "4", start_date=start_date) for t in tickers]
         )
 
         jobs = []  # (ticker, accession, primary_document) for every filing across every ticker

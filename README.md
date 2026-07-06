@@ -3,13 +3,14 @@
 [![tests](https://github.com/Arpita-314/quant-trading/actions/workflows/tests.yml/badge.svg)](https://github.com/Arpita-314/quant-trading/actions/workflows/tests.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-A research-grade, multi-strategy quantitative trading toolkit: five signal
+A research-grade, multi-strategy quantitative trading toolkit: six signal
 families (statistical arbitrage, mean reversion, momentum, ML-driven
-direction prediction, and real SEC-filing-based insider trading), a proper
-vectorized backtester, an adaptive "agent" that reallocates capital across
-strategies based on trailing risk-adjusted performance, and an async
-multi-agent live signal report modeled on the same dispatch-and-gather
-pattern behind modern coding agents (Cursor-style background agents).
+direction prediction, real SEC-filing-based insider trading, and a
+filing-language-drift signal from actual 10-K text), a proper vectorized
+backtester, two capital allocators (a rolling-Sharpe agent and a
+quantum-inspired QUBO optimizer), and an async multi-agent live signal
+report modeled on the same dispatch-and-gather pattern behind modern coding
+agents (Cursor-style background agents).
 
 **What this is:** a demonstration of correct quant-research methodology —
 causal signal generation, walk-forward ML validation, an honest backtest
@@ -43,6 +44,7 @@ src/quant_trading/
   data/
     loaders.py             # yfinance -> cached parquet -> wide price DataFrame
     sec_edgar.py            # async SEC EDGAR client: real, point-in-time Form 4 filings
+    filing_text.py            # async 10-K/10-Q text fetch + TF-IDF similarity ("Lazy Prices")
     news_scraper.py          # async concurrent headline scraper (live use only, see below)
     ipo_scanner.py            # async SEC EDGAR full-text search for recently-completed US IPOs
   strategies/
@@ -52,9 +54,11 @@ src/quant_trading/
     pairs_trading.py        # rolling-hedge-ratio spread z-score + state machine
     ml_signal.py            # walk-forward HistGradientBoosting on engineered features
     insider_trading.py       # real historical SEC Form 4 buy/sell flow -> position
+    filing_drift.py           # filing-language-change signal from real 10-K/10-Q text
   backtest/engine.py       # execution lag, gross-exposure risk overlay, costs, metrics
   agents/
     ensemble_allocator.py  # rolling-Sharpe adaptive capital allocation
+    qubo_allocator.py         # quantum-inspired (QUBO) mean-variance capital allocation
     sentiment.py             # pluggable sentiment scoring (deterministic default, optional LLM)
     orchestrator.py          # async multi-agent live signal dispatcher (see below)
   utils/metrics.py          # Sharpe, Sortino, Calmar, drawdown, etc.
@@ -105,15 +109,44 @@ backtest on the same data" step — that fusion of the walk-forward validation
 loop and the live signal loop is what makes the walk-forward-ness structural
 rather than a claim.
 
-## The ensemble agent
+## The ensemble agent(s)
 
-`AdaptiveEnsembleAgent` reallocates capital across the four strategies on a
+`AdaptiveEnsembleAgent` reallocates capital across the strategies on a
 fixed cadence (default: every 21 trading days), weighting each by its
 trailing rolling Sharpe ratio and capping any single sleeve at 60% of
 capital. It's a deterministic, fully auditable rule — not an LLM deciding
 trades. That's deliberate: a fund needs an allocation rule that's
 backtestable with a fixed seed and explainable to a risk committee, not one
 that "sounds like AI."
+
+### A second allocator: quantum-inspired portfolio optimization (QUBO)
+
+`QuboEnsembleAgent` (`agents/qubo_allocator.py`) is a genuinely different
+allocation *method*, not a rebrand of the same idea. Real quantum-finance
+research (D-Wave, IBM, and bank quantum-computing groups) formulates
+portfolio selection as a Quadratic Unconstrained Binary Optimization
+(QUBO) problem — the standard input format for a quantum annealer.
+This builds that exact formulation (Markowitz mean-variance: maximize
+`w'mu - risk_aversion * w'Sigma*w` subject to weights summing to 1) as a
+`dimod.BinaryQuadraticModel`, with each strategy's weight discretized onto
+a grid (0%, 25%, 50%, 75%, 100%) and one-hot encoded into binary variables,
+since QUBO variables are binary and continuous weights aren't directly
+representable. It's solved here via `neal.SimulatedAnnealingSampler` —
+D-Wave's open-source *classical* simulated-annealing proxy for a quantum
+annealer, since no quantum hardware is used — but the same `BinaryQuadraticModel`
+could be submitted to a real D-Wave annealer via `DWaveSampler` with zero
+change to the objective itself. That's the actual point of building it this
+way instead of just calling it "quantum" as decoration: the formulation is
+hardware-ready today, whether or not a quantum backend is ever attached.
+
+The methodological difference from `AdaptiveEnsembleAgent` is real:
+trailing-Sharpe ranking scores each strategy independently and has no way
+to represent "these two strategies are redundant," while the QUBO's
+covariance term does — two individually-decent strategies that move
+together contribute less diversification value than their Sharpes alone
+would suggest, and the optimizer can see that. See
+[Results](#results) for whether that theoretical advantage actually shows
+up in this sample.
 
 ## Alternative data: a real insider-trading signal
 
@@ -150,6 +183,56 @@ signals. The strategy is long-only by default: insider *selling* is largely
 non-discretionary in practice (10b5-1 pre-scheduled plans, tax
 diversification), while insider *buying* is almost always a voluntary,
 information-bearing decision.
+
+## A second alternative-data signal: filing-language drift ("Lazy Prices")
+
+`FilingDriftStrategy` (`strategies/filing_drift.py`) implements a real,
+peer-reviewed strategy: Cohen, Malloy & Nguyen, ["Lazy Prices"](https://onlinelibrary.wiley.com/doi/10.1111/jofi.12943)
+(*Journal of Finance*, 2020). The idea: measure how much a company's
+*language* changes between consecutive annual/quarterly filings (10-K to
+10-K, or 10-Q to 10-Q). An unusually large change predicts negative
+subsequent returns -- the paper's argument is that markets underreact to
+lengthy, boring textual disclosures that few investors read closely enough
+to notice have changed.
+
+The similarity measure is cosine similarity on a TF-IDF term-frequency
+vector space -- that's not a simplified stand-in for the paper's method,
+it's literally the measure the paper uses. `data/filing_text.py` fetches
+real 10-K/10-Q HTML via SEC EDGAR (async, cached, same retry/failure-count
+discipline as the insider-trading client) and strips it to plain text
+before comparing. Two things about that extraction were not obvious going
+in, and both were real bugs before they were fixed:
+
+1. **Modern filings use inline XBRL**, meaning financial facts are tagged
+   directly in the HTML, with large blocks of pure machine-readable
+   metadata hidden via `style="display:none"`. A plain `.get_text()` call
+   doesn't know about CSS visibility and happily returns that hidden
+   metadata as if it were prose -- silently drowning genuine language
+   changes in inline-XBRL tag noise rather than erroring. Hidden elements
+   are stripped before extracting text.
+2. **A transient fetch failure landing on whichever ticker happens to be
+   processed first is not the same as "no filing that year."** An early
+   version fetched one ticker's filings fully before moving to the next,
+   sequentially -- a rate-limit window that happened to land on the first
+   ticker in the list silently blanked out that one company's entire
+   similarity history while every other ticker, processed later on the far
+   side of the window, succeeded normally. Fixed the same way as the
+   insider-trading client: fetch across every ticker together, retry
+   failures in sweeps with a real pause between them, and print an explicit
+   warning with a failure count if anything still doesn't come back.
+
+Because a company's own filing-to-filing history is short (roughly 4 events
+a year) and this repo's universe is only 7 tickers -- nowhere near enough
+for the paper's cross-sectional decile sorts to mean anything -- the signal
+here compares each filing's language change to *that company's own*
+historical baseline (a rolling z-score over its trailing 4-8 filings)
+rather than ranking across the universe. That's a smaller, more modest test
+of the same underlying idea, not a full replication of the paper's
+methodology.
+
+Unlike news headlines, filing dates are real historical timestamps, so
+(unlike the sentiment strategy below) this one is honestly backtestable
+and included in the comparison table.
 
 ## Async agents: the "Cursor for trading signals" piece
 
@@ -215,30 +298,30 @@ wired into the backtest suite above.
 
 Backtest: `AAPL, MSFT, GOOGL, AMZN, NVDA, KO, PEP`, 2019-01-02 to 2026-07-02
 (1,885 trading days), 5 bps cost per unit of turnover, gross exposure capped
-at 1.0x.
-
-> `insider_trading` is wired into `scripts/run_demo.py` and unit-tested, but
-> a full historical SEC pull across this 7-ticker universe is thousands of
-> HTTP calls and doesn't fit a quick CI run -- the results row below will be
-> added once that data pull finishes locally. Run `python scripts/run_demo.py`
-> yourself to generate it (results cache to `data_cache/` so it's a one-time cost).
+at 1.0x. `insider_trading` uses the real, complete SEC Form 4 history for
+this universe (12,191 discretionary transactions); `filing_drift` uses real
+10-K filing text (47 filing-to-filing comparisons).
 
 | strategy | CAGR | Ann. Vol | Sharpe | Sortino | Max DD | Calmar | Win rate |
 |---|---|---|---|---|---|---|---|
-| mean_reversion | -11.8% | 21.9% | -0.46 | -0.60 | -64.5% | -0.18 | 46.9% |
-| momentum | -0.1% | 16.0% | 0.08 | 0.11 | -30.4% | 0.00 | 51.6% |
-| pairs_trading (KO/PEP) | -3.3% | 7.8% | -0.39 | -0.51 | -25.3% | -0.13 | 47.7% |
+| mean_reversion | -11.8% | 21.9% | -0.46 | -0.65 | -64.5% | -0.18 | 46.9% |
+| momentum | -0.1% | 16.0% | 0.08 | 0.09 | -30.4% | 0.00 | 51.6% |
+| pairs_trading (KO/PEP) | -3.3% | 7.8% | -0.39 | -0.34 | -25.3% | -0.13 | 47.7% |
 | ml_signal | -2.2% | 17.3% | -0.04 | -0.06 | -30.1% | -0.07 | 48.4% |
-| **ensemble_agent** | -8.6% | 14.8% | -0.53 | -0.72 | -51.9% | -0.17 | 47.9% |
+| insider_trading | **13.4%** | 19.4% | **0.75** | 0.91 | -28.5% | 0.47 | 52.3% |
+| filing_drift | -1.2% | 3.8% | -0.31 | -0.07 | -18.0% | -0.07 | 46.0% |
+| ensemble_agent_sharpe | -5.2% | 15.2% | -0.27 | -0.32 | -40.0% | -0.13 | 48.8% |
+| ensemble_agent_qubo | -3.5% | 12.6% | -0.22 | -0.27 | -30.3% | -0.12 | 49.6% |
 
 Equity curves: [`outputs/equity_curves.png`](outputs/equity_curves.png) (generated by `scripts/run_demo.py`; gitignored, regenerate locally).
 
 ### What the numbers actually show
 
-- **Momentum is the only sleeve with a (barely) positive Sharpe**, which
-  tracks: 2019-2026 was a strong secular bull run for this exact mega-cap
-  tech basket, punctuated by one sharp 2022 drawdown — close to the textbook
-  regime where 12-1 trend following has historically had a real, if modest, edge.
+- **Momentum is the only textbook sleeve with a (barely) positive Sharpe**,
+  which tracks: 2019-2026 was a strong secular bull run for this exact
+  mega-cap tech basket, punctuated by one sharp 2022 drawdown — close to
+  the regime where 12-1 trend following has historically had a real, if
+  modest, edge.
 - **Mean reversion loses money** because it's fighting the trend: a
   single-asset rolling z-score has no way to distinguish "temporary
   dislocation" from "this stock is re-rating," and mega-cap tech spent this
@@ -247,34 +330,58 @@ Equity curves: [`outputs/equity_curves.png`](outputs/equity_curves.png) (generat
   frequently cited as a textbook cointegrated pair. Running this repo's own
   `engle_granger_pvalue(KO, PEP)` over the actual backtest window returns
   **p = 1.0** — i.e. no statistical evidence of cointegration in this
-  sample. Cointegration is not a permanent property of two tickers; it has
-  to be tested on the window you intend to trade, not assumed from a
-  textbook example. The strategy lost money trading a mean-reversion premise
-  that didn't hold, and the toolkit's own pair-selection helper would have
+  sample. The strategy lost money trading a mean-reversion premise that
+  didn't hold, and the toolkit's own pair-selection helper would have
   flagged that *before* going live.
-- **The ensemble agent underperforms even a naive equal-weight blend of the
-  same four sleeves** (equal-weight Sharpe: -0.33 vs. agent Sharpe: -0.53,
-  and the gap persists across lookback/rebalance settings from 60/21 to
-  252/63 days tested). With only four sleeves, three of which have no real
-  edge in this sample, chasing trailing 60-252-day Sharpe estimates has
-  nothing solid to converge toward — it just adds turnover and a tendency to
-  overweight whichever sleeve most recently had a lucky run right before
-  mean-reverting. This is a known, real risk in tactical strategy-timing
-  (performance-chasing is frequently anti-persistent), reproduced here
-  rather than hidden.
+- **`insider_trading`'s strong headline Sharpe (0.75) needs a big asterisk:
+  it's substantially a single-stock effect, not broad-based signal.** NVDA
+  alone accounts for ~44% of the strategy's total return contribution —
+  unsurprising given NVDA returned roughly +5,700% over this window.
+  Re-running the identical strategy on the same universe *minus NVDA* drops
+  Sharpe from 0.75 to 0.47 and CAGR from 13.4% to 6.6% — and critically,
+  **that ex-NVDA Sharpe (0.47) is still worse than simply buying and holding
+  the same six remaining stocks equally weighted (Sharpe 1.04, CAGR
+  21.5%)**. So excluding the one name that happened to have a historic run,
+  the insider-buying signal did not beat doing nothing. The honest
+  conclusion is that this run mostly demonstrates the strategy correctly
+  went long NVDA some of the time during an extraordinary bull run, not that
+  insider buying is predictive in this sample.
+- **`filing_drift`'s -1.2% CAGR is not meaningful evidence either way — the
+  strategy only actually fired twice in seven years** (once on GOOGL, once
+  on PEP), because a 7-ticker universe has nowhere near enough filing events
+  for the "Lazy Prices" effect to show up statistically. The original paper
+  tests this cross-sectionally across thousands of firms; two independent
+  bets prove essentially nothing. This is the right honest read of a small
+  sample, not "the strategy doesn't work."
+- **Both ensemble agents underperform a naive equal-weight blend of all six
+  sleeves** (equal-weight Sharpe: ~0.02 vs. -0.27 for the trailing-Sharpe
+  agent and -0.22 for the QUBO agent). The QUBO allocator is consistently a
+  little better than trailing-Sharpe ranking — consistent with it being the
+  only one of the two that accounts for covariance between sleeves — but
+  neither escapes the same underlying problem: with `insider_trading`'s
+  edge concentrated in one lucky name and most other sleeves flat-to-negative
+  in this sample, there isn't a robust cross-sleeve signal for *either*
+  allocator to find. A smarter allocator can't manufacture edge that the
+  underlying sleeves don't have.
 
 None of this means the framework is broken — the lookahead-bias and
 execution-lag regression tests pass, and the mechanics are verified. It
-means four untuned textbook strategies on a heavily-arbitraged large-cap
-universe don't have much edge left in them, which is exactly what you'd
-expect and exactly why real funds spend money on data, execution, and
+means most of these strategies, on a small and heavily-arbitraged universe,
+don't have much edge left in them once you look one level deeper than the
+headline Sharpe ratio — which is exactly the level recruiters at real funds
+will look, and exactly why real funds spend money on data, execution, and
 breadth (hundreds to thousands of instruments) that this demo doesn't have.
 
 ## What a real edge would require
 
 - A much larger, less crowded cross-section (small/mid-cap, futures,
   international, or higher-frequency intraday data) instead of 7 mega-caps
-  everyone already trades
+  everyone already trades -- this would also let `filing_drift` run the
+  paper's actual cross-sectional decile-sort methodology instead of a
+  firm-specific baseline, and give it enough independent events to say
+  something statistically meaningful
+- Per-name position caps, so one stock's outsized run can't single-handedly
+  carry (or sink) a signal's headline numbers the way NVDA did here
 - Proper walk-forward hyperparameter search with a held-out final test
   window, not just walk-forward *fitting*
 - Alternative/orthogonal data (order flow, options-implied signals,
