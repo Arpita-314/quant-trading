@@ -6,6 +6,7 @@ pyarrow>=14.0
 statsmodels>=0.14
 matplotlib>=3.7
 pytest>=7.4
+pytest-asyncio>=0.23
 aiohttp>=3.9
 vaderSentiment>=3.3
 # optional, only needed for the LLM-based sentiment agent:

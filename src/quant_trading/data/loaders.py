@@ -62,7 +62,14 @@ def load_prices(
     if missing:
         raise ValueError(f"No price data returned for: {missing} (check tickers/date range)")
 
-    prices = prices.ffill().dropna(how="any")
+    # Only drop rows where EVERY ticker is still NaN (before any of them
+    # listed). A recently-IPO'd ticker mixed into an older universe legally
+    # has NaN for its pre-IPO history -- `how="any"` would silently squeeze
+    # the whole frame down to just the newest ticker's short window, wiping
+    # out years of history for every other ticker. Downstream strategies
+    # already treat per-column NaN correctly (no signal until enough data
+    # exists), so there's no need to force row-wise completeness here.
+    prices = prices.ffill().dropna(how="all")
 
     if cache_path is not None:
         prices.to_parquet(cache_path)

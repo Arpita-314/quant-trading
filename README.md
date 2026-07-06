@@ -44,6 +44,7 @@ src/quant_trading/
     loaders.py             # yfinance -> cached parquet -> wide price DataFrame
     sec_edgar.py            # async SEC EDGAR client: real, point-in-time Form 4 filings
     news_scraper.py          # async concurrent headline scraper (live use only, see below)
+    ipo_scanner.py            # async SEC EDGAR full-text search for recently-completed US IPOs
   strategies/
     base.py                # Strategy interface + the causality contract
     mean_reversion.py      # rolling z-score, per-asset
@@ -168,6 +169,38 @@ scoring misreads context.
 ```bash
 python scripts/run_live_agents.py AAPL MSFT NVDA
 ```
+
+### Recent-IPO discovery
+
+By default the live report also pulls in any company that completed a US
+IPO in the last 180 days, via `data/ipo_scanner.py` -- a fourth async agent
+querying SEC EDGAR's full text search for Form 424B4 (the *final* IPO
+prospectus, filed when a deal actually prices and starts trading, as
+opposed to Form S-1, which only signals intent and includes plenty of
+deals that get withdrawn or delayed indefinitely). SPAC/blank-check shells
+are filtered out by SIC code, since "recent IPOs" here means operating
+companies, not empty acquisition vehicles.
+
+`SPCX` (SpaceX, IPO'd 2026-06-12) and `CBRS` (Cerebras, IPO'd 2026-05-14)
+are included by default as an explicit fallback in case that scanner call
+is ever unavailable -- both have too little price history (~15-35 trading
+days) for the lookback-heavy strategies to say anything statistically
+meaningful, and the live report flags them as such rather than presenting
+noise as signal. This is a live-report-only addition; they are not part of
+the backtest universe in `scripts/run_demo.py`, where a handful of noisy
+days would just add random variance to the comparison table without
+teaching anything.
+
+A ticker that shows up in the SEC scan but doesn't yet resolve on the price
+data source (priced but not yet trading, or a data-source lag) is dropped
+rather than taking down the whole report -- see
+`orchestrator._load_prices_best_effort`.
+
+**Jio Platforms (India)** is explicitly out of scope: as of this writing it
+had filed a draft prospectus with India's SEBI but had not yet listed, and
+would list on NSE/BSE once it does -- a different regulator entirely. This
+repo's insider-trading pipeline is SEC-EDGAR-specific; covering Jio would
+need a separate SEBI/NSE data client, not just adding a ticker to a list.
 
 **This is explicitly not a backtest.** Yahoo Finance's headline feed (and
 most free news sources) only ever returns the *current* set of recent
