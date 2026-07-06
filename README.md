@@ -69,6 +69,7 @@ scripts/
 tests/                      # includes explicit lookahead-bias regression tests
 research/                    # standalone research pieces, independent of the src/ package
   options-mispricing-nn/       # pure-numpy NN predicting BS mispricing from vol surfaces
+  qphase-cross-validation/      # real-data correctness check against an external QAOA compiler
 ```
 
 `research/` holds self-contained research projects that don't share the
@@ -76,6 +77,19 @@ research/                    # standalone research pieces, independent of the sr
 `requirements.txt` and README rather than being folded into the main
 package, since forcing an unrelated project into a shared namespace just to
 keep one repo would make both harder to read.
+
+`qphase-cross-validation/` takes this repo's own real strategy-allocation
+problem (the same K-of-6 cardinality-constrained selection the QUBO
+allocator above solves) and runs it through a separate quantum-computing
+compiler project (QPhase) via its existing QAOA pipeline, comparing the
+result against the exact brute-force optimum and against classical
+simulated annealing. It matched the optimum 25/25 times across every
+cardinality and 5 seeds each -- a genuine, verifiable **correctness**
+result on real data. It is explicitly **not** a performance claim: at 6
+strategies, classical simulated annealing solves the same problem just as
+reliably, and the README there says so directly. QPhase isn't a public
+dependency, so this script isn't part of CI or the installable package --
+see its own README for how to run it against a local QPhase checkout.
 
 ### The causality contract (why this isn't a toy backtester)
 
