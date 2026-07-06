@@ -1,10 +1,15 @@
 # quant-trading
 
-A research-grade, multi-strategy quantitative trading toolkit: four classic
-signal families (statistical arbitrage, mean reversion, momentum, ML-driven
-direction prediction), a proper vectorized backtester, and an adaptive
-"agent" that reallocates capital across strategies based on trailing
-risk-adjusted performance.
+[![tests](https://github.com/Arpita-314/quant-trading/actions/workflows/tests.yml/badge.svg)](https://github.com/Arpita-314/quant-trading/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+A research-grade, multi-strategy quantitative trading toolkit: five signal
+families (statistical arbitrage, mean reversion, momentum, ML-driven
+direction prediction, and real SEC-filing-based insider trading), a proper
+vectorized backtester, an adaptive "agent" that reallocates capital across
+strategies based on trailing risk-adjusted performance, and an async
+multi-agent live signal report modeled on the same dispatch-and-gather
+pattern behind modern coding agents (Cursor-style background agents).
 
 **What this is:** a demonstration of correct quant-research methodology —
 causal signal generation, walk-forward ML validation, an honest backtest
@@ -35,18 +40,27 @@ numbers actually show and why.
 
 ```
 src/quant_trading/
-  data/loaders.py          # yfinance -> cached parquet -> wide price DataFrame
+  data/
+    loaders.py             # yfinance -> cached parquet -> wide price DataFrame
+    sec_edgar.py            # async SEC EDGAR client: real, point-in-time Form 4 filings
+    news_scraper.py          # async concurrent headline scraper (live use only, see below)
   strategies/
     base.py                # Strategy interface + the causality contract
     mean_reversion.py      # rolling z-score, per-asset
     momentum.py            # time-series momentum, inverse-vol sized, 12-1 skip
     pairs_trading.py        # rolling-hedge-ratio spread z-score + state machine
     ml_signal.py            # walk-forward HistGradientBoosting on engineered features
+    insider_trading.py       # real historical SEC Form 4 buy/sell flow -> position
   backtest/engine.py       # execution lag, gross-exposure risk overlay, costs, metrics
-  agents/ensemble_allocator.py  # rolling-Sharpe adaptive capital allocation
+  agents/
+    ensemble_allocator.py  # rolling-Sharpe adaptive capital allocation
+    sentiment.py             # pluggable sentiment scoring (deterministic default, optional LLM)
+    orchestrator.py          # async multi-agent live signal dispatcher (see below)
   utils/metrics.py          # Sharpe, Sortino, Calmar, drawdown, etc.
   utils/validation.py       # walk-forward (never shuffled) train/test splits
-scripts/run_demo.py        # end-to-end: download, backtest, blend, plot
+scripts/
+  run_demo.py             # end-to-end backtest: download, backtest, blend, plot
+  run_live_agents.py        # live, as-of-today multi-agent signal report (not a backtest)
 tests/                      # includes explicit lookahead-bias regression tests
 ```
 
@@ -92,11 +106,81 @@ trades. That's deliberate: a fund needs an allocation rule that's
 backtestable with a fixed seed and explainable to a risk committee, not one
 that "sounds like AI."
 
+## Alternative data: a real insider-trading signal
+
+`InsiderTradingStrategy` is built from actual SEC Form 4 filings, fetched
+concurrently via `data/sec_edgar.py` -- not news headlines, not a synthetic
+proxy. This matters because Form 4 filings carry a real historical filing
+date going back years, unlike news (see below), so this signal is honestly
+backtestable rather than only usable live.
+
+Two things about the SEC feed that were not obvious going in, and both
+turned into real bugs that had to be fixed before the data could be trusted:
+
+1. **The filing-list API's `primaryDocument` field points at the
+   XSLT-*rendered* HTML view, not the raw parseable XML.** Naively
+   requesting that path and feeding it to an XML parser silently produced
+   zero transactions for every filing (caught, misleadingly, by a
+   `ParseError` handler) rather than an error. The raw XML sits at the same
+   accession folder under just the basename with any `xslF345X0*/` prefix
+   stripped.
+2. **A transient network failure and "this filing has zero relevant
+   transactions" are not the same event**, but a naive `except Exception:
+   return []` treats them identically -- silently manufacturing an insider-
+   flow history with unannounced gaps that look like "no insider activity"
+   rather than "the fetch failed." The client now retries with backoff and
+   surfaces a warning with an explicit failure count instead of eating the
+   difference.
+
+Only transaction codes `P` (open-market purchase) and `S` (open-market sale)
+are kept from each filing's non-derivative transaction table. Codes like `M`
+(option/RSU exercise) and `F` (tax-withholding disposal) are administrative
+vesting mechanics, not discretionary decisions -- including them would drown
+the real signal in noise, which is a common mistake in naive insider-trading
+signals. The strategy is long-only by default: insider *selling* is largely
+non-discretionary in practice (10b5-1 pre-scheduled plans, tax
+diversification), while insider *buying* is almost always a voluntary,
+information-bearing decision.
+
+## Async agents: the "Cursor for trading signals" piece
+
+The live signal path (`agents/orchestrator.py`, `scripts/run_live_agents.py`)
+is structured the way modern async coding agents are: dispatch several
+independent workers concurrently, gather their results, then synthesize --
+rather than one linear script that scrapes news, *then* waits, *then*
+fetches filings, *then* waits, *then* computes signals. Here, price loading,
+headline scraping, and SEC filing fetches all run concurrently via a single
+`asyncio.gather`; CPU-bound quant-strategy scoring runs in a thread pool via
+`asyncio.to_thread` alongside them instead of blocking. Sentiment scoring is
+pluggable behind one interface (`agents/sentiment.py`): a deterministic
+VADER-based lexicon by default (free, reproducible, zero setup), or an
+actual LLM call if `ANTHROPIC_API_KEY` is set, for headlines where keyword
+scoring misreads context.
+
+```bash
+python scripts/run_live_agents.py AAPL MSFT NVDA
+```
+
+**This is explicitly not a backtest.** Yahoo Finance's headline feed (and
+most free news sources) only ever returns the *current* set of recent
+headlines -- there is no free, point-in-time archive of "what the news said
+on 2021-03-04" to backtest a sentiment strategy against. Faking one by
+applying today's headlines across historical dates would be lookahead bias
+dressed up as a feature. So the news+sentiment path is live-report-only; the
+SEC insider-trading path, which does carry real historical dates, is the one
+wired into the backtest suite above.
+
 ## Results
 
 Backtest: `AAPL, MSFT, GOOGL, AMZN, NVDA, KO, PEP`, 2019-01-02 to 2026-07-02
 (1,885 trading days), 5 bps cost per unit of turnover, gross exposure capped
 at 1.0x.
+
+> `insider_trading` is wired into `scripts/run_demo.py` and unit-tested, but
+> a full historical SEC pull across this 7-ticker universe is thousands of
+> HTTP calls and doesn't fit a quick CI run -- the results row below will be
+> added once that data pull finishes locally. Run `python scripts/run_demo.py`
+> yourself to generate it (results cache to `data_cache/` so it's a one-time cost).
 
 | strategy | CAGR | Ann. Vol | Sharpe | Sortino | Max DD | Calmar | Win rate |
 |---|---|---|---|---|---|---|---|

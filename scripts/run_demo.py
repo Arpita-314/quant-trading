@@ -8,6 +8,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -18,7 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from quant_trading.agents import AdaptiveEnsembleAgent
 from quant_trading.backtest.engine import run_many
 from quant_trading.data.loaders import load_prices
+from quant_trading.data.sec_edgar import build_daily_insider_flow, fetch_insider_transactions
 from quant_trading.strategies import (
+    InsiderTradingStrategy,
     MeanReversionStrategy,
     MLSignalStrategy,
     MomentumStrategy,
@@ -31,16 +34,22 @@ START = "2019-01-01"
 COST_BPS = 5.0
 
 
-def main() -> None:
+async def main() -> None:
     print(f"Downloading {UNIVERSE} from {START}...")
     prices = load_prices(UNIVERSE, start=START)
     print(f"Loaded {len(prices)} trading days, {prices.index.min().date()} -> {prices.index.max().date()}")
+
+    print("Fetching real SEC Form 4 insider-transaction history (this hits the network)...")
+    insider_txns = await fetch_insider_transactions(UNIVERSE, start_date=START)
+    daily_flow = build_daily_insider_flow(insider_txns, prices.index)
+    print(f"Loaded {len(insider_txns)} discretionary insider transactions across the universe")
 
     strategies = {
         "mean_reversion": MeanReversionStrategy(lookback=20, entry_z=1.0, exit_z=0.25),
         "momentum": MomentumStrategy(lookback=90, vol_lookback=20, skip=5),
         "pairs_trading": PairsTradingStrategy(*PAIR, lookback=60, entry_z=2.0, exit_z=0.5),
         "ml_signal": MLSignalStrategy(tickers=UNIVERSE, train_window=252, retrain_every=21),
+        "insider_trading": InsiderTradingStrategy(daily_flow=daily_flow, lookback=90, z_lookback=252),
     }
 
     print("Running backtests...")
@@ -84,4 +93,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
