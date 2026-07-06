@@ -82,11 +82,45 @@ optimized (COBYLA, 80 iterations) circuit, not a bug. A suspiciously
 perfect record across two different experiments would be the thing to be
 suspicious of.
 
+## A third, structurally different problem: sparse index tracking
+
+`run_index_tracking.py` poses a different kind of objective entirely:
+*minimize* tracking error rather than *maximize* return. Given this
+repo's 7-ticker universe's real daily returns and an equal-weighted
+"index" of all 7 as the benchmark, which K tickers alone best replicate
+that benchmark's return series?
+
+Cardinality-constrained sparse index tracking is a well-studied NP-hard
+problem in the portfolio-construction literature. It matters as an
+addition here specifically because it's not just another cardinality
+selection problem with a different label -- minimizing squared tracking
+error produces a different QUBO shape (a Gram matrix of the return data,
+not a covariance-risk-vs-return tradeoff), and it's the first problem in
+this folder where "lower is better" rather than "higher is better", which
+exercises QPhase's `optimize_qaoa(..., sense="min")` path rather than the
+`sense="max"` path every other script here uses.
+
+| K | brute-force optimum | tracking MSE | QAOA hits (of 5 seeds) | neal matches |
+|---|---|---|---|---|
+| 1 | NVDA | 8.98e-5 | 5/5 | yes |
+| 2 | AAPL, NVDA | 4.89e-5 | 5/5 | yes |
+| 3 | MSFT, NVDA, PEP | 2.95e-5 | 5/5 | yes |
+| 4 | AAPL, GOOGL, AMZN, KO | 1.66e-5 | 5/5 | yes |
+| 5 | MSFT, GOOGL, AMZN, KO, PEP | 7.82e-6 | 5/5 | yes |
+| 6 | AAPL, MSFT, GOOGL, AMZN, KO, PEP | 2.49e-6 | 5/5 | yes |
+
+Tracking error decreases monotonically as K grows toward the full universe
+(7 of 7 tickers would track itself exactly) -- the expected shape for this
+problem, and a useful sanity check that the QUBO is encoding the right
+thing. QPhase matched the exact optimum in all 30 (K, seed) combinations
+here; so did classical simulated annealing, for the same n=7 reason as
+everywhere else in this folder.
+
 ## Running it
 
-Neither script here is part of `quant-trading`'s installable package or
-CI — QPhase is a separate, private repository, not a public dependency, so
-nothing here can assume it's installed.
+None of the three scripts here are part of `quant-trading`'s installable
+package or CI — QPhase is a separate, private repository, not a public
+dependency, so nothing here can assume it's installed.
 
 ```bash
 cd ../..                            # repo root
@@ -95,4 +129,5 @@ pip install dimod dwave-neal        # classical cross-check
 cd research/qphase-cross-validation
 python run_comparison.py --qphase-path /path/to/your/qphase/checkout
 python run_trade_selection.py --qphase-path /path/to/your/qphase/checkout
+python run_index_tracking.py --qphase-path /path/to/your/qphase/checkout
 ```
