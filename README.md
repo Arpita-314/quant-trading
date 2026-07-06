@@ -1,7 +1,7 @@
 # quant-trading
 
 [![tests](https://github.com/Arpita-314/quant-trading/actions/workflows/tests.yml/badge.svg)](https://github.com/Arpita-314/quant-trading/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 A research-grade, multi-strategy quantitative trading toolkit: five signal
 families (statistical arbitrage, mean reversion, momentum, ML-driven
@@ -292,4 +292,4 @@ python scripts/run_demo.py
 
 ## License
 
-MIT.
+GPL v3.
